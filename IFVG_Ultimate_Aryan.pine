@@ -1,0 +1,762 @@
+//@version=6
+indicator("IFVG Ultimate Aryan", overlay = true, max_bars_back = 5000, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500)
+
+//#region[Inputs]
+grpGeneral = "General Settings"
+ifvgMode          = input.string("Single", title = "Detection", options = ["Single", "Series"], group = grpGeneral)
+biasMode          = input.string("Neutral", title = "Bias", options = ["Neutral", "Bullish", "Bearish"], group = grpGeneral)
+hideLosing        = input.bool(true, title = "Hide Losing Setups", group = grpGeneral, tooltip = "Invalidated IFVGs are hidden")
+allowExtIFVG      = input.bool(true, title = "Allow 7 - 15 Candle IFVGs", tooltip = "If enabled, IFVGs may form within 15 candles.\nIf disabled, they must form within 6 candles.", group = grpGeneral)
+requireBEIntact   = input.bool(true, title = "Require BE not breached on inversion", group = grpGeneral, tooltip = "If true, setups where the confirmation candle itself already reaches B.E are completely hidden.")
+onlyShowSweptIFVG = input.bool(true, title = "Only show IFVGs with HTF sweep", group = grpGeneral, tooltip = "If true, an IFVG setup is only shown/confirmed if an HTF sweep occurred during its swing (per the Swing Sweep Filter setting).")
+onlyShowHtfAlignedIFVG = input.bool(true, title = "Only show IFVGs with HTF FVGs", group = grpGeneral, tooltip = "If true, an IFVG setup is only shown/confirmed if its price range overlaps an HTF FVG zone (from any enabled HTF FVG timeframe).")
+setupHistory      = input.int(11, "Number of Setups Displayed", minval = 0, maxval = 50, group = grpGeneral, tooltip = "Number of past IFVG setups (active or resolved) to keep drawn on the chart. 0 = unlimited.")
+
+grpLiquidity = "Liquidity"
+htfMode           = input.string("Custom", "Alignment Mode", options = ["Auto", "Custom"], group = grpLiquidity, inline = "htf")
+customHTF         = input.timeframe("60", "Custom", group = grpLiquidity, inline = "htf", active = htfMode == "Custom")
+showSweep         = input.bool(true, "Show Sweeps", group = grpLiquidity)
+sweepColorBuy     = input.color(color.gray, "Bullish Sweep", group = grpLiquidity, inline = "sweepcolor", active = showSweep)
+sweepColorSell    = input.color(color.gray, "Bearish Sweep", group = grpLiquidity, inline = "sweepcolor", active = showSweep)
+sweepWidth        = input.int(1, "Width", minval = 1, maxval = 4, group = grpLiquidity, inline = "sweepstyle", active = showSweep)
+sweepStyleStr     = input.string("Dashed", "Style", options = ["Dotted", "Dashed", "Solid"], group = grpLiquidity, inline = "sweepstyle", active = showSweep)
+sweepLabelText    = input.string("$$$", "Label Text", group = grpLiquidity, inline = "sweeplabel", active = showSweep)
+sweepLabelSizeStr = input.string("Small", "Label Size", options = ["Tiny", "Small", "Normal", "Large"], group = grpLiquidity, inline = "sweeplabel", active = showSweep)
+
+grpHtfFvg = "HTF FVG"
+showHtfFvg        = input.bool(true, "Show HTF FVG", group = grpHtfFvg)
+htfFvgMode        = input.string("Custom", "TF 1 Mode", options = ["Auto", "Custom"], group = grpHtfFvg, inline = "htffvg")
+manualHtfFvg      = input.timeframe("60", "Custom", group = grpHtfFvg, inline = "htffvg", active = htfFvgMode == "Custom")
+htfFvg2Enable     = input.bool(true, "TF 2", group = grpHtfFvg, inline = "htffvg2")
+htfFvg2TF         = input.timeframe("15", "", group = grpHtfFvg, inline = "htffvg2")
+htfFvg3Enable     = input.bool(true, "TF 3", group = grpHtfFvg, inline = "htffvg3")
+htfFvg3TF         = input.timeframe("30", "", group = grpHtfFvg, inline = "htffvg3")
+htfFvg4Enable     = input.bool(false, "TF 4", group = grpHtfFvg, inline = "htffvg4")
+htfFvg4TF         = input.timeframe("1D", "", group = grpHtfFvg, inline = "htffvg4")
+maxHtfZones       = input.int(10, "Max Zones Shown (per TF)", minval = 1, maxval = 20, group = grpHtfFvg, tooltip = "Applied separately to each HTF FVG timeframe. Zones attached to a still-active IFVG setup are kept regardless of this limit.")
+htfInvalidation   = input.string("Candle Close", "Invalidation", options = ["Candle Close", "Wick"], group = grpHtfFvg, tooltip = "Candle Close: an HTF FVG is only invalidated when a candle of its own timeframe closes beyond it (bearish: close above the zone, bullish: close below).\nWick: invalidated as soon as price trades through the zone on any bar.")
+htfKeepMitigated  = input.bool(true, "Keep Mitigated Zones (faded)", group = grpHtfFvg, tooltip = "If enabled, an invalidated HTF FVG stays on the chart as a faded box that stops at the point it was invalidated. If disabled, it is deleted.")
+htfBullColor      = input.color(color.new(color.blue, 85), "Bullish Zone", group = grpHtfFvg, inline = "htfcolor")
+htfBearColor      = input.color(color.new(color.red, 85), "Bearish Zone", group = grpHtfFvg, inline = "htfcolor")
+
+grpIFVG = "IFVG"
+colorIFVGBull     = input.color(color.blue, "Long Color", group = grpIFVG, inline = "ifvgline")
+colorIFVGBear     = input.color(color.red, "Short Color", group = grpIFVG, inline = "ifvgline")
+colorIFVGBullBox  = input.color(color.new(color.gray, 50), "Bullish IFVG", group = grpIFVG, inline = "ifvgbox")
+colorIFVGBearBox  = input.color(color.new(color.gray, 50), "Bearish IFVG", group = grpIFVG, inline = "ifvgbox")
+ifvgLineText      = input.string("IFVG", "Label Text", group = grpIFVG, inline = "ifvgtext")
+textSizeStr       = input.string("Small", "Label Size", options = ["Tiny", "Small", "Normal", "Large"], group = grpIFVG, inline = "ifvgtext")
+
+grpLimits = "Limits"
+showSL      = input.bool(true, title = "Stoploss", group = grpLimits, inline = "sl")
+colorSL     = input.color(color.gray, title = "", group = grpLimits, inline = "sl")
+slPlacement = input.string("Wick", title = "Stoploss Placement", options = ["Wick", "Body", "IFVG"], group = grpLimits, inline = "sl")
+showBE      = input.bool(true, title = "Break Even", group = grpLimits, inline = "be")
+colorBE     = input.color(color.orange, title = "", group = grpLimits, inline = "be")
+
+grpRR = "Risk/Reward"
+showRR  = input.bool(true, "Enable Projections?", group = grpRR, inline = "rrb")
+rrInput = input.string("1,2", "", group = grpRR, inline = "rrb", active = showRR)
+rrColor = input.color(color.gray, "", group = grpRR, inline = "rrc", active = showRR)
+rrStyle = input.string("Dashed", "", options = ["Solid", "Dashed", "Dotted"], group = grpRR, inline = "rrc", active = showRR)
+rrWidth = input.int(1, "", minval = 1, group = grpRR, inline = "rrc", active = showRR)
+
+
+grpAlerts = "Alerts"
+enableAlerts   = input.bool(true, "Enable Alerts", group = grpAlerts, tooltip = "Master switch. Alerts only fire when this is enabled AND the confirmation candle falls within an enabled session below.")
+session1Enable = input.bool(true, "Session 1", group = grpAlerts, inline = "s1")
+session1Time   = input.session("0930-1600", "", group = grpAlerts, inline = "s1")
+session2Enable = input.bool(false, "Session 2", group = grpAlerts, inline = "s2")
+session2Time   = input.session("2000-0000", "", group = grpAlerts, inline = "s2")
+session3Enable = input.bool(false, "Session 3", group = grpAlerts, inline = "s3")
+session3Time   = input.session("0200-0500", "", group = grpAlerts, inline = "s3")
+
+grpWatermark  = "Watermark"
+showWatermark = input.bool(true, title = "Show?", inline = "wm1", group = grpWatermark)
+wmTextColor   = input.color(#000000, title = "", inline = "wm1", group = grpWatermark)
+wmSize1Str    = input.string("Normal", title = "Title/Symbol Size", inline = "wm2", group = grpWatermark, options = ["Tiny", "Small", "Normal", "Large", "Huge"])
+wmSize3Str    = input.string("Small", title = "Date Size", inline = "wm3", group = grpWatermark, options = ["Tiny", "Small", "Normal", "Large", "Huge"])
+//#endregion
+
+
+//#region[Constants and Helpers]
+noColor            = color.new(color.white, 100)
+wmBgColor          = color.new(color.black, 100)
+MAX_SWING_HISTORY  = 50
+MAX_TRACKED_SETUPS = 50
+NY_TZ              = "America/New_York"
+HTF_LABEL_OFFSET   = 3
+HTF_LABEL_SLOT_GAP = 7
+
+showHtfCE    = true
+showHtfLabel = true
+
+volSma = ta.sma(volume, 20)
+
+sweepLineStyle = switch sweepStyleStr
+    "Dotted" => line.style_dotted
+    "Dashed" => line.style_dashed
+    "Solid"  => line.style_solid
+
+rrLineStyle = switch rrStyle
+    "Dotted" => line.style_dotted
+    "Dashed" => line.style_dashed
+    "Solid"  => line.style_solid
+
+sweepLabelSize = switch sweepLabelSizeStr
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    "Large"  => size.large
+
+textSize = switch textSizeStr
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    "Large"  => size.large
+
+wmSize1 = switch wmSize1Str
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    "Large"  => size.large
+    "Huge"   => size.huge
+
+wmSize3 = switch wmSize3Str
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    "Large"  => size.large
+    "Huge"   => size.huge
+
+bool inSession1 = session1Enable and not na(time(timeframe.period, session1Time, NY_TZ))
+bool inSession2 = session2Enable and not na(time(timeframe.period, session2Time, NY_TZ))
+bool inSession3 = session3Enable and not na(time(timeframe.period, session3Time, NY_TZ))
+bool inAlertSession = inSession1 or inSession2 or inSession3
+
+f_getMappedHTF() =>
+    string tf = timeframe.period
+    if tf == "1" or tf == "1m"
+        "15"
+    else if tf == "3" or tf == "3m"
+        "30"
+    else if tf == "5" or tf == "5m"
+        "60"
+    else if tf == "15" or tf == "15m"
+        "240"
+    else if tf == "30" or tf == "30m"
+        "240"
+    else if tf == "60" or tf == "1h" or tf == "1H"
+        "1D"
+    else if tf == "240" or tf == "4h" or tf == "4H"
+        "1W"
+    else if tf == "1D" or tf == "D"
+        "1W"
+    else
+        "60"
+
+// HTF FVG timeframes (slot 1 = Auto/Custom, slots 2-4 = extra timeframes)
+htfFvgTF1 = htfFvgMode == "Auto" ? f_getMappedHTF() : manualHtfFvg
+htfFvgTF2 = htfFvg2TF
+htfFvgTF3 = htfFvg3TF
+htfFvgTF4 = htfFvg4TF
+
+// Extra slots are skipped when they duplicate an earlier slot
+htfFvgOn1 = showHtfFvg
+htfFvgOn2 = showHtfFvg and htfFvg2Enable and htfFvgTF2 != htfFvgTF1
+htfFvgOn3 = showHtfFvg and htfFvg3Enable and htfFvgTF3 != htfFvgTF1 and htfFvgTF3 != htfFvgTF2
+htfFvgOn4 = showHtfFvg and htfFvg4Enable and htfFvgTF4 != htfFvgTF1 and htfFvgTF4 != htfFvgTF2 and htfFvgTF4 != htfFvgTF3
+//#endregion
+
+
+//#region[Types]
+type SwingFVG
+    int    fvgBar1
+    int    fvgBar3
+    float  fvgTop
+    float  fvgBottom
+    int    swingBar
+    float  swingPrice
+    box    fvgBox
+    bool   ifvgConfirmed = false
+    bool   swept = false
+
+type HtfImbalance
+    bool   bullish
+    int    openTime
+    float  top
+    float  bottom
+    string tf
+    int    slot
+    bool   mitigated = false
+    box    zoneBox
+    line   ceLine
+    label  lbl
+    int    attachCount = 0
+    bool   keepAlive = false
+
+type Trade
+    bool   bullish
+    box    fvgBox
+    line   entryLine
+    label  entryLabel
+    int    entryBar
+    float  entryPrice
+    line   slLine
+    label  slLabel
+    float  slPrice
+    line   beLine
+    label  beLabel
+    float  bePrice
+    array<line>  rrLines  = na
+    array<label> rrLabels = na
+    bool   resolved = false
+    HtfImbalance htfZone = na
+
+type SwingPoint
+    float y
+    int   t
+
+type SwingSet
+    SwingPoint[] points
+//#endregion
+
+
+//#region[State]
+var Trade[] setupRecords = array.new<Trade>()
+var HtfImbalance[] htfZones = array.new<HtfImbalance>()
+//#endregion
+
+
+//#region[Functions and Methods - HTF FVG]
+method deleteDrawings(HtfImbalance this) =>
+    if not na(this.zoneBox)
+        box.delete(this.zoneBox)
+    if not na(this.ceLine)
+        line.delete(this.ceLine)
+    if not na(this.lbl)
+        label.delete(this.lbl)
+
+// Trim is applied per timeframe so one TF can't push out another TF's zones
+f_trimHtfZones(string tf) =>
+    int cnt = 0
+    for zz in htfZones
+        if zz.tf == tf
+            cnt += 1
+    int i = 0
+    while cnt > maxHtfZones and i < htfZones.size()
+        HtfImbalance zt = htfZones.get(i)
+        if zt.tf == tf and not zt.keepAlive
+            htfZones.remove(i)
+            zt.deleteDrawings()
+            cnt -= 1
+        else
+            i += 1
+
+f_findHtfOverlap(float top, float bottom) =>
+    HtfImbalance found = na
+    if htfZones.size() > 0
+        for z in htfZones
+            bool overlap = not z.mitigated and not (bottom > z.top or top < z.bottom)
+            if overlap
+                found := z
+    found
+
+f_attachHtfZone(Trade tr, HtfImbalance z) =>
+    if not na(z)
+        tr.htfZone := z
+        z.attachCount += 1
+        z.keepAlive := true
+
+f_detachHtfZone(Trade tr) =>
+    if not na(tr.htfZone)
+        tr.htfZone.attachCount -= 1
+        if tr.htfZone.attachCount <= 0
+            tr.htfZone.keepAlive := false
+        tr.htfZone := na
+
+f_addHtfZone(bool bullish, int openTime, float top, float bottom, string tf, int slot) =>
+    HtfImbalance z = HtfImbalance.new(bullish, openTime, top, bottom, tf, slot)
+    color zoneColor = bullish ? htfBullColor : htfBearColor
+    color textColor = color.new(zoneColor, 0)
+    if showHtfFvg
+        z.zoneBox := box.new(openTime, top, time, bottom, xloc = xloc.bar_time, border_color = zoneColor, bgcolor = zoneColor)
+        if showHtfCE
+            float mid = (top + bottom) / 2
+            z.ceLine := line.new(openTime, mid, time, mid, xloc = xloc.bar_time, color = color.new(zoneColor, 40), style = line.style_dotted)
+        if showHtfLabel
+            z.lbl := label.new(bar_index + HTF_LABEL_OFFSET + slot * HTF_LABEL_SLOT_GAP, bullish ? bottom : top, tf + " FVG", xloc = xloc.bar_index, style = bullish ? label.style_label_up : label.style_label_down, color = noColor, textcolor = textColor, size = size.small, text_font_family = font.family_monospace)
+    htfZones.push(z)
+    f_trimHtfZones(tf)
+
+f_mitigateZone(HtfImbalance z, int idx) =>
+    z.mitigated := true
+    if htfKeepMitigated and not na(z.zoneBox)
+        box.set_right(z.zoneBox, time)
+        box.set_bgcolor(z.zoneBox, color.new(z.bullish ? htfBullColor : htfBearColor, 93))
+        box.set_border_style(z.zoneBox, line.style_dotted)
+        if not na(z.ceLine)
+            line.delete(z.ceLine)
+        if not na(z.lbl)
+            label.delete(z.lbl)
+    else
+        z.deleteDrawings()
+        htfZones.remove(idx)
+
+// A zone is invalidated only when a candle of ITS OWN timeframe CLOSES beyond it:
+//   bearish FVG -> that TF's candle closes above the zone top
+//   bullish FVG -> that TF's candle closes below the zone bottom
+f_mitigateByClose(string tf, float closedClose) =>
+    if htfZones.size() > 0 and not na(closedClose)
+        for i = htfZones.size() - 1 to 0
+            z = htfZones.get(i)
+            if z.tf == tf and not z.mitigated
+                bool closedBeyond = z.bullish ? closedClose < z.bottom : closedClose > z.top
+                if closedBeyond
+                    f_mitigateZone(z, i)
+
+// Extends live zones to the current bar. In "Wick" mode it also invalidates zones price trades through.
+// In "Candle Close" mode invalidation is handled by f_mitigateByClose instead.
+f_updateHtfZones() =>
+    if htfZones.size() > 0
+        for i = htfZones.size() - 1 to 0
+            z = htfZones.get(i)
+            if not z.mitigated
+                bool wickBroke = htfInvalidation == "Wick" and (z.bullish ? low < z.bottom : high > z.top)
+                if wickBroke
+                    f_mitigateZone(z, i)
+                else if not na(z.zoneBox)
+                    box.set_right(z.zoneBox, time)
+                    if not na(z.ceLine)
+                        line.set_x2(z.ceLine, time)
+                    if not na(z.lbl)
+                        label.set_x(z.lbl, bar_index + HTF_LABEL_OFFSET + z.slot * HTF_LABEL_SLOT_GAP)
+
+// Detects a newly formed HTF FVG for one timeframe slot.
+// Each call site keeps its own 'var' state, so the 4 slots are independent.
+f_scanHtfFvg(bool enabled, string tf, int slot, float hH1, float hL1, float hH3, float hL3, int hT2, float hC1, int hTc1) =>
+    var int lastSeenT2 = na
+    var int lastCloseT = na
+    bool newBar = hT2 != lastSeenT2
+    lastSeenT2 := hT2
+    bool newClose = hTc1 != lastCloseT
+    lastCloseT := hTc1
+    // 1) check existing zones against the HTF candle that just closed
+    if enabled and newClose and htfInvalidation == "Candle Close"
+        f_mitigateByClose(tf, hC1)
+    // 2) then register any newly formed FVG
+    if enabled and newBar
+        if hL1 > hH3
+            f_addHtfZone(true, hT2, hL1, hH3, tf, slot)
+        if hH1 < hL3
+            f_addHtfZone(false, hT2, hL3, hH1, tf, slot)
+//#endregion
+
+
+//#region[Functions and Methods - IFVG]
+ict_PushCandidate(array<SwingFVG> arr, int fvgBar1, int fvgBar3, float top, float bottom, int oBar, float oPrice) =>
+    SwingFVG sw = SwingFVG.new(fvgBar1, fvgBar3, top, bottom, oBar, oPrice)
+    arr.push(sw)
+    if arr.size() > MAX_TRACKED_SETUPS
+        arr.shift()
+    sw
+
+ict_ScanExtreme(bool ifvgBullish, int fromBar) =>
+    int   span      = bar_index - fromBar
+    float bestPrice = na
+    int   bestBar   = na
+    for j = 0 to span
+        float val = ifvgBullish ? low[span - j] : high[span - j]
+        if na(bestPrice) or (ifvgBullish ? val < bestPrice : val > bestPrice)
+            bestPrice := val
+            bestBar   := fromBar + j
+    [bestBar, bestPrice]
+
+ict_ParseFloats(string src) =>
+    var out = array.new<float>()
+    array.clear(out)
+    for part in str.split(str.replace_all(src, " ", ""), ",")
+        v = str.tonumber(part)
+        if not na(v)
+            out.push(v)
+    out
+
+ict_CreateRR(Trade tr, int x1, int x2) =>
+    if showRR and not na(tr.slPrice)
+        ratios = ict_ParseFloats(rrInput)
+        if ratios.size() > 0
+            float riskRange = math.abs(tr.entryPrice - tr.slPrice)
+            lns = array.new<line>()
+            lbs = array.new<label>()
+            for r in ratios
+                float rrPrice = tr.bullish ? tr.entryPrice + riskRange * r : tr.entryPrice - riskRange * r
+                lns.push(line.new(x1, rrPrice, x2, rrPrice, color = rrColor, style = rrLineStyle, width = rrWidth))
+                lbs.push(label.new(x2, rrPrice, str.tostring(r) + "R", xloc = xloc.bar_index, style = label.style_label_left, color = na, textcolor = rrColor, size = textSize, text_font_family = font.family_monospace))
+            tr.rrLines  := lns
+            tr.rrLabels := lbs
+
+ict_DeleteRR(Trade tr) =>
+    if not na(tr.rrLines)
+        for ln in tr.rrLines
+            line.delete(ln)
+    if not na(tr.rrLabels)
+        for lb in tr.rrLabels
+            label.delete(lb)
+    tr.rrLines  := na
+    tr.rrLabels := na
+
+ict_TrackLine(bool isLow, array<SwingFVG> validArr, bool sweepValid, float sweepPrice, int sweepTime, color sweepLineColor) =>
+    var float originPrice  = na
+    var int   originBar    = na
+    var bool  frozen       = false
+    var float frozenPrice  = na
+    var int   freezeBar    = na
+    var SwingFVG liveEntry    = na
+    var int      clusterLast1 = na
+    var line     sweepLn       = na
+    var label    sweepLbl      = na
+    var float    sweepLnPrice  = na
+    var int      sweepLnTime   = na
+
+    bool  pivotOrigin = isLow ? ta.lowestbars(3) == -1  : ta.highestbars(3) == -1
+    bool  pivotOpp    = isLow ? ta.highestbars(3) == -1 : ta.lowestbars(3) == -1
+    float originSrc   = isLow ? low[1]  : high[1]
+    float oppSrc      = isLow ? high[1] : low[1]
+    bool  fvgHere     = isLow ? low[1] > high[3] : high[1] < low[3]
+    float fvgTop      = isLow ? low[1] : low[3]
+    float fvgBottom   = isLow ? high[3] : high[1]
+
+    if pivotOrigin
+        originPrice  := originSrc
+        originBar    := bar_index - 1
+        frozen       := false
+        frozenPrice  := na
+        freezeBar    := na
+        liveEntry    := na
+        clusterLast1 := na
+        sweepLn      := na
+        sweepLbl     := na
+        sweepLnPrice := na
+        sweepLnTime  := na
+
+    if not na(originBar)
+        if frozen
+            bool broken = isLow ? oppSrc > frozenPrice : oppSrc < frozenPrice
+            if broken
+                frozen := false
+
+        bool checkFvg = (not frozen or bar_index == freezeBar + 1) and bar_index - 3 >= originBar - 1 and fvgHere
+
+        if checkFvg
+            int fvgBar1 = bar_index - 1
+            int fvgBar3 = bar_index - 3
+
+            if not na(liveEntry) and not liveEntry.ifvgConfirmed and validArr.indexof(liveEntry) < 0
+                liveEntry    := na
+                clusterLast1 := na
+
+            if na(liveEntry)
+                liveEntry    := ict_PushCandidate(validArr, fvgBar1, fvgBar3, fvgTop, fvgBottom, originBar, originPrice)
+                clusterLast1 := fvgBar1
+            else if not liveEntry.ifvgConfirmed
+                if ifvgMode == "Series" and fvgBar1 == clusterLast1 + 1
+                    liveEntry.fvgTop    := math.max(liveEntry.fvgTop, fvgTop)
+                    liveEntry.fvgBottom := math.min(liveEntry.fvgBottom, fvgBottom)
+                    liveEntry.fvgBar1   := fvgBar1
+                    clusterLast1 := fvgBar1
+                else
+                    bool better = isLow ? fvgTop > liveEntry.fvgTop : fvgBottom < liveEntry.fvgBottom
+                    if better
+                        int oldIdx = validArr.indexof(liveEntry)
+                        if oldIdx >= 0
+                            validArr.remove(oldIdx)
+                        liveEntry    := ict_PushCandidate(validArr, fvgBar1, fvgBar3, fvgTop, fvgBottom, originBar, originPrice)
+                        clusterLast1 := fvgBar1
+
+        if sweepValid
+            bool betterSweep = na(sweepLnPrice) or (isLow ? sweepPrice > sweepLnPrice : sweepPrice < sweepLnPrice)
+            if betterSweep
+                sweepLnPrice := sweepPrice
+                sweepLnTime  := sweepTime
+            if na(sweepLn)
+                sweepLn  := line.new(sweepLnTime, sweepLnPrice, time, sweepLnPrice, xloc = xloc.bar_time, color = sweepLineColor, style = sweepLineStyle, width = sweepWidth)
+                sweepLbl := label.new(bar_index, sweepLnPrice, sweepLabelText, xloc = xloc.bar_index, style = label.style_label_left, color = na, textcolor = sweepLineColor, size = sweepLabelSize, text_font_family = font.family_monospace)
+            else
+                line.set_xy1(sweepLn, sweepLnTime, sweepLnPrice)
+                line.set_xy2(sweepLn, time, sweepLnPrice)
+                label.set_xy(sweepLbl, bar_index, sweepLnPrice)
+        else if not na(sweepLn)
+            line.set_xy2(sweepLn, time, sweepLnPrice)
+            label.set_xy(sweepLbl, bar_index, sweepLnPrice)
+
+        bool swingSwept = not na(sweepLn)
+
+        if not na(liveEntry)
+            liveEntry.swept := swingSwept
+
+        if not frozen and pivotOpp
+            frozen      := true
+            frozenPrice := oppSrc
+            freezeBar   := bar_index
+
+ict_CheckIFVG(array<SwingFVG> arr, array<Trade> trades, bool sourceBearish, int graceCandles) =>
+    int n = arr.size()
+    if n > 0
+        for i = n - 1 to 0
+            SwingFVG e = arr.get(i)
+            if not e.ifvgConfirmed
+                bool trigger = sourceBearish ? close[1] > e.fvgTop : close[1] < e.fvgBottom
+                if trigger
+                    e.ifvgConfirmed := true
+                    bool  ifvgBullish = sourceBearish
+                    float lvl         = close[1]
+                    bool  beBreached  = requireBEIntact and (ifvgBullish ? lvl >= e.swingPrice : lvl <= e.swingPrice)
+                    bool  passSweepFilter = not onlyShowSweptIFVG or e.swept
+                    HtfImbalance matchedZone = f_findHtfOverlap(e.fvgTop, e.fvgBottom)
+                    bool  passHtfFilter   = not onlyShowHtfAlignedIFVG or not na(matchedZone)
+
+                    if not beBreached and passSweepFilter and passHtfFilter
+                        color lc       = ifvgBullish ? colorIFVGBull : colorIFVGBear
+                        color boxColor = ifvgBullish ? colorIFVGBullBox : colorIFVGBearBox
+                        e.fvgBox := box.new(e.fvgBar3, e.fvgTop, bar_index, e.fvgBottom, border_color = noColor, border_width = 1, bgcolor = boxColor)
+                        int    x1  = bar_index - 1
+                        int    x2  = x1 + 9
+                        bool   volAbove = volume[1] > volSma[1]
+                        string txt = ifvgLineText + (ifvgBullish ? "+" : "-") + (volAbove ? " ● " : "")
+                        line  entryLine  = line.new(x1, lvl, x2, lvl, color = lc)
+                        label entryLabel = label.new(x2, lvl, txt, style = label.style_label_left, color = noColor, textcolor = lc, size = textSize, text_font_family = font.family_monospace)
+
+                        Trade tr = Trade.new(ifvgBullish, e.fvgBox, entryLine, entryLabel, x1, lvl)
+                        f_attachHtfZone(tr, matchedZone)
+
+                        if showSL
+                            [bestBar, bestPrice] = ict_ScanExtreme(ifvgBullish, e.fvgBar1)
+                            int   offset       = bar_index - bestBar
+                            bool  candleBullish = close[offset] > open[offset]
+                            float bodyPrice     = (ifvgBullish == candleBullish) ? open[offset] : close[offset]
+                            float slPrice = switch slPlacement
+                                "Wick" => bestPrice
+                                "Body" => bodyPrice
+                                "IFVG" => ifvgBullish ? e.fvgBottom : e.fvgTop
+                            tr.slPrice := slPrice
+                            tr.slLine  := line.new(bestBar, slPrice, bar_index + 3, slPrice, color = colorSL, style = line.style_dotted)
+                            tr.slLabel := label.new(bar_index + 3, slPrice, "SL", style = label.style_label_left, color = noColor, textcolor = colorSL, size = size.small, text_font_family = font.family_monospace)
+                            ict_CreateRR(tr, x1, x2)
+
+                        if showBE
+                            tr.bePrice := e.swingPrice
+                            tr.beLine  := line.new(e.swingBar, e.swingPrice, x2, e.swingPrice, color = colorBE, style = line.style_solid)
+                            tr.beLabel := label.new(x2, e.swingPrice, "B.E", style = label.style_label_left, color = noColor, textcolor = colorBE, size = size.small, text_font_family = font.family_monospace)
+
+                        trades.push(tr)
+                        setupRecords.push(tr)
+                        while setupHistory > 0 and setupRecords.size() > setupHistory
+                            Trade oldest = setupRecords.shift()
+                            int oldIdx = trades.indexof(oldest)
+                            if oldIdx >= 0
+                                trades.remove(oldIdx)
+                            box.delete(oldest.fvgBox)
+                            line.delete(oldest.entryLine)
+                            label.delete(oldest.entryLabel)
+                            line.delete(oldest.slLine)
+                            label.delete(oldest.slLabel)
+                            line.delete(oldest.beLine)
+                            label.delete(oldest.beLabel)
+                            ict_DeleteRR(oldest)
+                            f_detachHtfZone(oldest)
+
+                        if enableAlerts and inAlertSession
+                            alert((ifvgBullish ? "Bullish" : "Bearish") + " IFVG confirmed on " + syminfo.ticker, alert.freq_once_per_bar_close)
+                if not trigger and bar_index - e.fvgBar1 > graceCandles
+                    arr.remove(i)
+
+ict_ManageTrades(array<Trade> trades) =>
+    int n = trades.size()
+    if n > 0
+        for i = n - 1 to 0
+            Trade tr = trades.get(i)
+            if not tr.resolved
+                bool slHit = tr.bullish ? (not na(tr.slPrice) and low <= tr.slPrice) : (not na(tr.slPrice) and high >= tr.slPrice)
+                bool beHit = tr.bullish ? (not na(tr.bePrice) and high >= tr.bePrice) : (not na(tr.bePrice) and low <= tr.bePrice)
+
+                if slHit
+                    tr.resolved := true
+                    line.delete(tr.slLine)
+                    label.delete(tr.slLabel)
+                    line.delete(tr.beLine)
+                    label.delete(tr.beLabel)
+                    ict_DeleteRR(tr)
+                    f_detachHtfZone(tr)
+                    if hideLosing
+                        box.delete(tr.fvgBox)
+                        line.delete(tr.entryLine)
+                        label.delete(tr.entryLabel)
+                        int recIdx = setupRecords.indexof(tr)
+                        if recIdx >= 0
+                            setupRecords.remove(recIdx)
+                    else
+                        line.set_color(tr.entryLine, colorSL)
+                        label.set_textcolor(tr.entryLabel, colorSL)
+                        label.set_color(tr.entryLabel, noColor)
+                    trades.remove(i)
+                else if beHit
+                    tr.resolved := true
+                    line.delete(tr.beLine)
+                    label.delete(tr.beLabel)
+                    line.delete(tr.slLine)
+                    label.delete(tr.slLabel)
+                    ict_DeleteRR(tr)
+                    f_detachHtfZone(tr)
+                    trades.remove(i)
+//#endregion
+
+
+//#region[Functions and Methods - Sweep Detector]
+autoHTF() =>
+    switch timeframe.period
+        "1"   => "15"
+        "3"   => "30"
+        "5"   => "60"
+        "15"  => "240"
+        "60"  => "1D"
+        "240" => "1W"
+        "1D"  => "1M"
+        =>      "1M"
+
+method addPoint(SwingSet this, float y, int t) =>
+    this.points.push(SwingPoint.new(y, t))
+    if this.points.size() > MAX_SWING_HISTORY
+        this.points.remove(0)
+
+method findSweep(SwingSet this, float testPrice, bool isHigh) =>
+    bool  found  = false
+    float foundY = na
+    int   foundT = na
+    if this.points.size() > 0
+        for i = this.points.size() - 1 to 0
+            pt = this.points.get(i)
+            bool isSwept = isHigh ? testPrice > pt.y : testPrice < pt.y
+            if isSwept
+                bool better = not found or (isHigh ? pt.y > foundY : pt.y < foundY)
+                if better
+                    foundY := pt.y
+                    foundT := pt.t
+                found := true
+                this.points.remove(i)
+    [found, foundY, foundT]
+//#endregion
+
+
+//#region[Logic - Sweep Detector]
+htf = htfMode == "Auto" ? autoHTF() : customHTF
+
+var float htfCurH     = high
+var int   htfCurHTime = time
+var float htfCurL     = low
+var int   htfCurLTime = time
+
+var float[] htfHighs    = array.new<float>()
+var float[] htfLows     = array.new<float>()
+var int[]   htfHighTime = array.new<int>()
+var int[]   htfLowTime  = array.new<int>()
+
+htfChanged = time(htf) != time(htf)[1]
+
+if htfChanged
+    htfHighs.push(htfCurH)
+    htfLows.push(htfCurL)
+    htfHighTime.push(htfCurHTime)
+    htfLowTime.push(htfCurLTime)
+    if htfHighs.size() > MAX_SWING_HISTORY + 5
+        htfHighs.shift()
+        htfLows.shift()
+        htfHighTime.shift()
+        htfLowTime.shift()
+    htfCurH     := high
+    htfCurHTime := time
+    htfCurL     := low
+    htfCurLTime := time
+else
+    if high > htfCurH
+        htfCurH     := high
+        htfCurHTime := time
+    if low < htfCurL
+        htfCurL     := low
+        htfCurLTime := time
+
+var SwingSet stHigh = SwingSet.new(array.new<SwingPoint>())
+var SwingSet stLow  = SwingSet.new(array.new<SwingPoint>())
+
+if htfChanged and htfHighs.size() >= 3
+    n = htfHighs.size()
+    midHigh = htfHighs.get(n - 2)
+    if midHigh >= htfHighs.get(n - 3) and midHigh >= htfHighs.get(n - 1)
+        stHigh.addPoint(midHigh, htfHighTime.get(n - 2))
+
+    midLow = htfLows.get(n - 2)
+    if midLow <= htfLows.get(n - 3) and midLow <= htfLows.get(n - 1)
+        stLow.addPoint(midLow, htfLowTime.get(n - 2))
+
+[sweepLowFound, sweepLowPrice, sweepLowTime]    = stLow.findSweep(low, false)
+[sweepHighFound, sweepHighPrice, sweepHighTime] = stHigh.findSweep(high, true)
+//#endregion
+
+
+//#region[Logic - HTF FVG]
+// One request.security per timeframe slot (must stay at global scope, called every bar)
+[h1H1, h1L1, h1H3, h1L3, h1T2, h1C1, h1Tc1] = request.security(syminfo.tickerid, htfFvgTF1, [high[1], low[1], high[3], low[3], time[2], close[1], time[1]], lookahead = barmerge.lookahead_off)
+[h2H1, h2L1, h2H3, h2L3, h2T2, h2C1, h2Tc1] = request.security(syminfo.tickerid, htfFvgTF2, [high[1], low[1], high[3], low[3], time[2], close[1], time[1]], lookahead = barmerge.lookahead_off)
+[h3H1, h3L1, h3H3, h3L3, h3T2, h3C1, h3Tc1] = request.security(syminfo.tickerid, htfFvgTF3, [high[1], low[1], high[3], low[3], time[2], close[1], time[1]], lookahead = barmerge.lookahead_off)
+[h4H1, h4L1, h4H3, h4L3, h4T2, h4C1, h4Tc1] = request.security(syminfo.tickerid, htfFvgTF4, [high[1], low[1], high[3], low[3], time[2], close[1], time[1]], lookahead = barmerge.lookahead_off)
+
+f_scanHtfFvg(htfFvgOn1, htfFvgTF1, 0, h1H1, h1L1, h1H3, h1L3, h1T2, h1C1, h1Tc1)
+f_scanHtfFvg(htfFvgOn2, htfFvgTF2, 1, h2H1, h2L1, h2H3, h2L3, h2T2, h2C1, h2Tc1)
+f_scanHtfFvg(htfFvgOn3, htfFvgTF3, 2, h3H1, h3L1, h3H3, h3L3, h3T2, h3C1, h3Tc1)
+f_scanHtfFvg(htfFvgOn4, htfFvgTF4, 3, h4H1, h4L1, h4H3, h4L3, h4T2, h4C1, h4Tc1)
+
+f_updateHtfZones()
+//#endregion
+
+
+//#region[Logic - IFVG]
+var SwingFVG[] validBullish  = array.new<SwingFVG>()
+var SwingFVG[] validBearish  = array.new<SwingFVG>()
+var Trade[]    activeTrades  = array.new<Trade>()
+
+int  graceCandles      = allowExtIFVG ? 15 : 6
+bool enableBullOutput  = biasMode != "Bearish"
+bool enableBearOutput  = biasMode != "Bullish"
+
+if enableBearOutput
+    ict_TrackLine(true, validBullish, sweepHighFound, sweepHighPrice, sweepHighTime, sweepColorSell)
+if enableBullOutput
+    ict_TrackLine(false, validBearish, sweepLowFound, sweepLowPrice, sweepLowTime, sweepColorBuy)
+
+if enableBearOutput
+    ict_CheckIFVG(validBullish, activeTrades, false, graceCandles)
+if enableBullOutput
+    ict_CheckIFVG(validBearish, activeTrades, true, graceCandles)
+
+ict_ManageTrades(activeTrades)
+//#endregion
+
+
+//#region[Watermark]
+wm_numTF = timeframe.isminutes ? (str.tonumber(timeframe.period) % 60 == 0 ? str.tostring(str.tonumber(timeframe.period) / 60) : timeframe.period) : timeframe.period
+wm_txtTF = timeframe.isminutes ? (str.tonumber(timeframe.period) % 60 == 0 ? "H" : "m") : ""
+wm_tf    = wm_numTF + wm_txtTF
+
+wm_line1 = "IFVG Ultimate Aryan (" + wm_tf + ")"
+wm_line2 = syminfo.ticker
+wm_line3 = "Liquidity: " + (htfMode == "Auto" ? "Auto (" + htf + ")" : "Custom (" + htf + ")")
+wm_line4 = "Bias: " + biasMode
+wm_line5 = str.tostring(dayofmonth(time_close)) + "/" + str.tostring(month(time_close)) + "/" + str.tostring(year(time_close))
+
+if showWatermark and barstate.islast
+    wmTable = table.new(position.bottom_center, 1, 5, frame_width = 0)
+    table.cell(wmTable, 0, 0, wm_line1, text_color = wmTextColor, text_halign = "center", text_size = wmSize1, bgcolor = wmBgColor, text_font_family = font.family_monospace)
+    table.cell(wmTable, 0, 1, wm_line2, text_color = wmTextColor, text_halign = "center", text_size = wmSize1, bgcolor = wmBgColor, text_font_family = font.family_monospace)
+    table.cell(wmTable, 0, 2, wm_line3, text_color = wmTextColor, text_halign = "center", text_size = wmSize3, bgcolor = wmBgColor, text_font_family = font.family_monospace)
+    table.cell(wmTable, 0, 3, wm_line4, text_color = wmTextColor, text_halign = "center", text_size = wmSize3, bgcolor = wmBgColor, text_font_family = font.family_monospace)
+    table.cell(wmTable, 0, 4, wm_line5, text_color = wmTextColor, text_halign = "center", text_size = wmSize3, bgcolor = wmBgColor, text_font_family = font.family_monospace)
+//#endregion
